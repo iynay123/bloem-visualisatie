@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<title>Kleurveranderende bloem - geluid visualisatie</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{
+    margin:0;padding:0;
+    height:100vh;width:100vw;
+    background:black;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    overflow:hidden;
+  }
+  video{
+    width:70vw;max-width:700px;
+    height:auto;
+    object-fit:contain;
+    transition:filter 0.6s ease, opacity 0.6s ease;
+    opacity:1;
+  }
+  #overlay{
+    position:fixed;top:15px;left:15px;
+    color:#fff;font-family:sans-serif;font-size:14px;
+  }
+  button{
+    background:#6ac;color:#022;border:none;
+    padding:6px 12px;border-radius:8px;cursor:pointer;
+  }
+</style>
+</head>
+<body>
+
+<video id="bloem" src="bloem.mp4" muted playsinline preload="auto"></video>
+
+<div id="overlay">
+  <button id="startBtn">🎤 Start microfoon</button>
+  <div id="status">Niet gestart</div>
+</div>
+
+<script>
+const video = document.getElementById('bloem');
+let audioContext, analyser, micSource;
+let running=false;
+let smoothLevel=0;
+let smoothHue=0;
+let VIDEO_DURATION=3.0;
+let observedMax=0.01;
+
+video.addEventListener('loadedmetadata',()=>{
+  if(!isNaN(video.duration)) VIDEO_DURATION=video.duration;
+});
+
+async function startMic(){
+  if(running) return;
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    audioContext=new (window.AudioContext||window.webkitAudioContext)();
+    analyser=audioContext.createAnalyser();
+    analyser.fftSize=2048;
+    micSource=audioContext.createMediaStreamSource(stream);
+    micSource.connect(analyser);
+    running=true;
+    document.getElementById('status').textContent="Microfoon actief";
+    requestAnimationFrame(loop);
+  }catch(e){
+    document.getElementById('status').textContent="Microfoon geweigerd of fout";
+    console.error(e);
+  }
+}
+
+function loop(){
+  if(!running) return;
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(buf);
+
+  // Bereken volume en dominant frequentiegebied
+  let total = 0;
+  for(let i=0;i<buf.length;i++) total += buf[i];
+  const avg = total / buf.length / 255;
+
+  if(avg>observedMax) observedMax=avg;
+  observedMax*=0.995;
+  if(observedMax<0.001) observedMax=0.001;
+  let norm = avg / observedMax;
+  if(norm>1) norm=1;
+
+  // smoothness (volume)
+  smoothLevel += 0.05*(norm - smoothLevel);
+
+  // Dominante frequentie (waar het meeste geluid zit)
+  let maxVal = 0, maxIndex = 0;
+  for(let i=0;i<buf.length;i++){
+    if(buf[i]>maxVal){maxVal=buf[i];maxIndex=i;}
+  }
+
+  // frequentie naar kleur: lage tonen = rood, midden = geel, hoog = blauw
+  const nyquist = audioContext.sampleRate/2;
+  const freq = maxIndex * (nyquist / buf.length);
+  let hue;
+  if(freq < 300) hue = 0;         // rood
+  else if(freq < 800) hue = 40;   // oranje/geel
+  else if(freq < 2000) hue = 120; // groen
+  else if(freq < 4000) hue = 200; // blauw
+  else hue = 280;                 // paars
+  smoothHue += 0.05*(hue - smoothHue);
+
+  // pas video-filter toe
+  video.style.filter = `hue-rotate(${smoothHue}deg) brightness(${0.8+smoothLevel*0.4})`;
+  video.style.opacity = smoothLevel>0.02 ? 1 : 0; // verdwijnt bij stilte
+
+  // video-framerate aan amplitude koppelen
+  const t = smoothLevel * VIDEO_DURATION;
+  if(Math.abs(video.currentTime - t) > 0.02){
+    try{video.currentTime = t;}catch(e){}
+  }
+
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('startBtn').addEventListener('click',startMic);
+</script>
+</body>
+</html>
